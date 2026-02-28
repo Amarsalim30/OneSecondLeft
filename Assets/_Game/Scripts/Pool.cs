@@ -6,7 +6,10 @@ public sealed class Pool<T> where T : Component
     private readonly T prefab;
     private readonly Transform parent;
     private readonly Stack<T> available;
+    private readonly HashSet<T> availableLookup;
     private readonly List<T> allInstances;
+    private readonly HashSet<T> allInstancesLookup;
+    private bool duplicateReleaseWarningLogged;
 
     public int Capacity => allInstances.Count;
     public int AvailableCount => available.Count;
@@ -18,32 +21,62 @@ public sealed class Pool<T> where T : Component
         int safeCapacity = Mathf.Max(1, capacity);
 
         available = new Stack<T>(safeCapacity);
+        availableLookup = new HashSet<T>();
         allInstances = new List<T>(safeCapacity);
+        allInstancesLookup = new HashSet<T>();
 
         for (int i = 0; i < safeCapacity; i++)
         {
             T instance = CreateInstance();
             available.Push(instance);
+            availableLookup.Add(instance);
         }
     }
 
     public bool TryGet(out T instance)
     {
-        if (available.Count == 0)
+        while (available.Count > 0)
         {
-            instance = null;
-            return false;
+            instance = available.Pop();
+            if (instance == null)
+            {
+                continue;
+            }
+
+            if (!availableLookup.Remove(instance))
+            {
+                LogDuplicateReleaseWarning(instance);
+                continue;
+            }
+
+            instance.gameObject.SetActive(true);
+            return true;
         }
 
-        instance = available.Pop();
-        instance.gameObject.SetActive(true);
-        return true;
+        if (availableLookup.Count > 0)
+        {
+            availableLookup.Clear();
+        }
+
+        instance = null;
+        return false;
     }
 
     public void Release(T instance)
     {
         if (instance == null)
         {
+            return;
+        }
+
+        if (!allInstancesLookup.Contains(instance))
+        {
+            return;
+        }
+
+        if (!availableLookup.Add(instance))
+        {
+            LogDuplicateReleaseWarning(instance);
             return;
         }
 
@@ -68,6 +101,19 @@ public sealed class Pool<T> where T : Component
         T instance = Object.Instantiate(prefab, parent);
         instance.gameObject.SetActive(false);
         allInstances.Add(instance);
+        allInstancesLookup.Add(instance);
         return instance;
+    }
+
+    private void LogDuplicateReleaseWarning(T instance)
+    {
+        if (duplicateReleaseWarningLogged)
+        {
+            return;
+        }
+
+        duplicateReleaseWarningLogged = true;
+        string instanceName = instance != null ? instance.name : "null";
+        Debug.LogWarning($"Pool<{typeof(T).Name}> ignored duplicate release for '{instanceName}'.");
     }
 }

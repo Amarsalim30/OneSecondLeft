@@ -14,25 +14,6 @@ public static class MvpScaffoldGenerator
     private const string BootScenePath = ScenesPath + "/Boot.unity";
     private const string GameScenePath = ScenesPath + "/Game.unity";
 
-    [InitializeOnLoadMethod]
-    private static void AutoGenerateIfMissing()
-    {
-        EditorApplication.delayCall += () =>
-        {
-            if (Application.isPlaying)
-            {
-                return;
-            }
-
-            if (File.Exists(BootScenePath) && File.Exists(GameScenePath))
-            {
-                return;
-            }
-
-            GenerateScaffold();
-        };
-    }
-
     [MenuItem("Tools/One Second Left/Generate MVP Scaffold")]
     public static void GenerateScaffold()
     {

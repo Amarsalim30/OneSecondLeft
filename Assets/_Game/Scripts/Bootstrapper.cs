@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using System.Collections.Generic;
 
 public static class Bootstrapper
 {
@@ -26,47 +27,145 @@ public static class Bootstrapper
             return;
         }
 
-        if (Object.FindFirstObjectByType<GameManager>() != null)
+        List<string> repairs = new List<string>();
+        EnsureRuntimeGraph(repairs);
+        if (repairs.Count > 0)
         {
-            return;
+            Debug.LogWarning($"Bootstrapper repaired runtime graph: {string.Join(", ", repairs)}");
+        }
+    }
+
+    private static void EnsureRuntimeGraph(List<string> repairs)
+    {
+        ConfigureMainCamera(repairs);
+
+        GameManager manager = Object.FindFirstObjectByType<GameManager>();
+        GameObject root = manager != null ? manager.gameObject : GameObject.Find("GameRoot");
+        if (root == null)
+        {
+            root = new GameObject("GameRoot");
+            repairs.Add("created GameRoot");
         }
 
-        ConfigureMainCamera();
+        if (manager == null)
+        {
+            manager = root.AddComponent<GameManager>();
+            repairs.Add("created GameManager");
+        }
 
-        GameObject root = new GameObject("GameRoot");
-        GameObject obstacleContainer = new GameObject("Obstacles");
-        obstacleContainer.transform.SetParent(root.transform, false);
+        TimeAbility timeAbility = EnsureService<TimeAbility>(root, "TimeAbility", repairs);
+        ScoreManager scoreManager = EnsureService<ScoreManager>(root, "ScoreManager", repairs);
+        AudioManager audioManager = EnsureService<AudioManager>(root, "AudioManager", repairs);
+        ObstacleSpawner spawner = EnsureService<ObstacleSpawner>(root, "ObstacleSpawner", repairs);
 
-        GameManager manager = root.AddComponent<GameManager>();
-        TimeAbility timeAbility = root.AddComponent<TimeAbility>();
-        ScoreManager scoreManager = root.AddComponent<ScoreManager>();
-        AudioManager audioManager = root.AddComponent<AudioManager>();
-        ObstacleSpawner spawner = root.AddComponent<ObstacleSpawner>();
-
-        PlayerController playerController = CreatePlayer(root.transform);
-        ObstacleWall obstacleTemplate = CreateObstacleTemplate(root.transform);
-        spawner.SetObstaclePrefab(obstacleTemplate, obstacleContainer.transform);
+        Transform obstacleContainer = FindOrCreateChild(root.transform, "Obstacles", repairs);
+        PlayerController playerController = EnsurePlayer(root.transform, repairs);
+        ObstacleWall obstacleTemplate = EnsureObstacleTemplate(root.transform, repairs);
+        spawner.SetObstaclePrefab(obstacleTemplate, obstacleContainer);
         spawner.SetSystems(playerController, scoreManager, audioManager);
 
-        UIHud hud = HudFactory.Create(timeAbility, scoreManager);
+        UIHud hud = Object.FindFirstObjectByType<UIHud>();
+        if (hud == null)
+        {
+            hud = HudFactory.Create(timeAbility, scoreManager);
+            repairs.Add("created UIHud");
+        }
+
         manager.Configure(playerController, timeAbility, spawner, scoreManager, audioManager, hud);
     }
 
-    private static void ConfigureMainCamera()
+    private static T EnsureService<T>(GameObject root, string label, List<string> repairs) where T : Component
+    {
+        T existing = Object.FindFirstObjectByType<T>();
+        if (existing != null)
+        {
+            return existing;
+        }
+
+        if (root == null)
+        {
+            root = new GameObject("GameRoot");
+            repairs.Add("created GameRoot");
+        }
+
+        repairs.Add($"created {label}");
+        return root.AddComponent<T>();
+    }
+
+    private static Transform FindOrCreateChild(Transform parent, string childName, List<string> repairs)
+    {
+        Transform child = parent.Find(childName);
+        if (child != null)
+        {
+            return child;
+        }
+
+        GameObject childObject = new GameObject(childName);
+        childObject.transform.SetParent(parent, false);
+        repairs.Add($"created {childName}");
+        return childObject.transform;
+    }
+
+    private static PlayerController EnsurePlayer(Transform parent, List<string> repairs)
+    {
+        PlayerController player = Object.FindFirstObjectByType<PlayerController>();
+        if (player != null)
+        {
+            return player;
+        }
+
+        repairs.Add("created Player");
+        return CreatePlayer(parent);
+    }
+
+    private static ObstacleWall EnsureObstacleTemplate(Transform parent, List<string> repairs)
+    {
+        Transform existing = parent.Find("ObstacleWallTemplate");
+        if (existing != null)
+        {
+            ObstacleWall wall = existing.GetComponent<ObstacleWall>();
+            if (wall == null)
+            {
+                wall = existing.gameObject.AddComponent<ObstacleWall>();
+                repairs.Add("added ObstacleWall component to ObstacleWallTemplate");
+            }
+
+            PrepareTemplateVisuals(existing.gameObject);
+            return wall;
+        }
+
+        repairs.Add("created ObstacleWallTemplate");
+        return CreateObstacleTemplate(parent);
+    }
+
+    private static void ConfigureMainCamera(List<string> repairs)
     {
         Camera camera = Camera.main;
         if (camera == null)
         {
-            GameObject cameraObject = new GameObject("Main Camera");
-            cameraObject.tag = "MainCamera";
-            camera = cameraObject.AddComponent<Camera>();
+            camera = Object.FindFirstObjectByType<Camera>();
         }
 
+        if (camera != null)
+        {
+            if (!camera.CompareTag("MainCamera"))
+            {
+                camera.tag = "MainCamera";
+                repairs.Add("tagged existing camera as MainCamera");
+            }
+
+            return;
+        }
+
+        GameObject cameraObject = new GameObject("Main Camera");
+        cameraObject.tag = "MainCamera";
+        camera = cameraObject.AddComponent<Camera>();
         camera.transform.position = new Vector3(0f, 0f, -10f);
         camera.orthographic = true;
         camera.orthographicSize = 6f;
         camera.clearFlags = CameraClearFlags.SolidColor;
         camera.backgroundColor = new Color(0.03f, 0.04f, 0.09f, 1f);
+        repairs.Add("created Main Camera");
     }
 
     private static PlayerController CreatePlayer(Transform parent)
@@ -97,7 +196,12 @@ public static class Bootstrapper
         GameObject wall = new GameObject("ObstacleWallTemplate");
         wall.transform.SetParent(parent, false);
         ObstacleWall template = wall.AddComponent<ObstacleWall>();
+        PrepareTemplateVisuals(wall);
+        return template;
+    }
 
+    private static void PrepareTemplateVisuals(GameObject wall)
+    {
         Sprite sprite = GetSquareSprite();
         SpriteRenderer[] renderers = wall.GetComponentsInChildren<SpriteRenderer>(true);
         for (int i = 0; i < renderers.Length; i++)
@@ -108,7 +212,6 @@ public static class Bootstrapper
         }
 
         wall.SetActive(false);
-        return template;
     }
 
     private static Sprite GetSquareSprite()

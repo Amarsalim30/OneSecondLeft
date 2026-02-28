@@ -67,20 +67,3 @@ GraphicsSettings:
   m_LightProbeOutsideHullStrategy: 0
   m_CameraRelativeLightCulling: 0
   m_CameraRelativeShadowCulling: 0
-  # OneSecondLeft Review Issues (from docs/ISSUES.md)
-  # ISSUE-001 [Critical]: Bootstrap short-circuits on partial scene state.
-  # ISSUE-002 [Critical]: Gameplay loop depends on pool init success.
-  # ISSUE-003 [Major]: Synchronous scene load in boot path.
-  # ISSUE-004 [Blocker]: Drag movement always consumes slow-mo.
-  # ISSUE-005 [Critical]: Any trigger/collision causes death.
-  # ISSUE-006 [Major]: Nondeterministic loop progression.
-  # ISSUE-007 [Critical]: No pause/resume policy for timeScale on mobile.
-  # ISSUE-008 [Major]: HUD ignores safe area and uses hardcoded coordinates.
-  # ISSUE-009 [Major]: Pool allows duplicate release corruption.
-  # ISSUE-010 [Minor]: Unnecessary repeated timeScale writes.
-  # ISSUE-011 [Minor]: Score UX appears frozen at run start due integer rounding display.
-  # ISSUE-012 [Major]: Scene serialization and runtime config are inconsistent.
-  # ISSUE-013 [Major]: Singleton lifecycle is incomplete.
-  # ISSUE-014 [Major]: Editor auto-scaffold mutates project state implicitly.
-  # ISSUE-015 [Major]: Game scene is not self-contained; build relies on runtime object synthesis.
-  # ISSUE-016 [Major]: No automated playmode coverage and low testability hooks.

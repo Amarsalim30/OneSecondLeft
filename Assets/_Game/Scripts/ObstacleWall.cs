@@ -13,8 +13,18 @@ public class ObstacleWall : MonoBehaviour
 
     [Header("Geometry")]
     [SerializeField, Min(0.1f)] private float wallHeight = 0.95f;
+    [Header("Visuals")]
+    [SerializeField] private Color lowDangerColor = new Color(0.95f, 0.95f, 1f, 1f);
+    [SerializeField] private Color highDangerColor = new Color(1f, 0.23f, 0.23f, 1f);
+    [SerializeField] private Gradient dangerGradient;
+    [SerializeField, Range(0f, 1f)] private float minDangerAlpha = 0.82f;
+    [SerializeField] private int baseSortingOrder;
+    [SerializeField, Min(0)] private int maxAdditionalSortingOrder = 3;
+    [SerializeField] private AnimationCurve dangerResponseCurve = AnimationCurve.EaseInOut(0f, 0f, 1f, 1f);
 
     private const float MinSegmentWidth = 0.01f;
+    private static Sprite fallbackSquareSprite;
+    private float dangerIntensity;
 
     public float GapLeft { get; private set; }
     public float GapRight { get; private set; }
@@ -25,10 +35,13 @@ public class ObstacleWall : MonoBehaviour
     private void Awake()
     {
         EnsureParts();
+        EnsureLethalMarkers();
+        ApplyDangerVisuals();
     }
 
     public void Configure(float gapCenterX, float gapWidth, float wallHalfWidth, float y)
     {
+        EnsureLethalMarkers();
         float safeGapHalf = Mathf.Max(0.05f, gapWidth * 0.5f);
         GapLeft = gapCenterX - safeGapHalf;
         GapRight = gapCenterX + safeGapHalf;
@@ -38,6 +51,7 @@ public class ObstacleWall : MonoBehaviour
 
         SetY(y);
         ApplyGeometry(Mathf.Max(0.1f, wallHalfWidth));
+        ApplyDangerVisuals();
     }
 
     public void SetY(float y)
@@ -65,6 +79,26 @@ public class ObstacleWall : MonoBehaviour
         NearMissDistance = CalculateDistanceToNearestGapEdge(playerX);
         WasNearMiss = nearMissThreshold > 0f && NearMissDistance <= nearMissThreshold;
         return true;
+    }
+
+    public bool IsInsideGap(float playerX, float edgePadding = 0f)
+    {
+        float safePadding = Mathf.Max(0f, edgePadding);
+        float paddedLeft = GapLeft + safePadding;
+        float paddedRight = GapRight - safePadding;
+
+        if (paddedLeft >= paddedRight)
+        {
+            return false;
+        }
+
+        return playerX > paddedLeft && playerX < paddedRight;
+    }
+
+    public void SetDangerIntensity(float normalizedIntensity)
+    {
+        dangerIntensity = Mathf.Clamp01(normalizedIntensity);
+        ApplyDangerVisuals();
     }
 
     private float CalculateDistanceToNearestGapEdge(float playerX)
@@ -128,6 +162,7 @@ public class ObstacleWall : MonoBehaviour
         {
             collider.size = new Vector2(width, wallHeight);
             collider.offset = Vector2.zero;
+            collider.isTrigger = true;
         }
 
         if (sprite != null)
@@ -174,6 +209,25 @@ public class ObstacleWall : MonoBehaviour
         {
             rightSprite = rightPart.GetComponent<SpriteRenderer>();
         }
+
+        if (leftSprite != null && leftSprite.sprite == null)
+        {
+            leftSprite.sprite = GetFallbackSquareSprite();
+        }
+
+        if (rightSprite != null && rightSprite.sprite == null)
+        {
+            rightSprite.sprite = GetFallbackSquareSprite();
+        }
+
+        if (leftSprite != null && baseSortingOrder == 0)
+        {
+            baseSortingOrder = leftSprite.sortingOrder;
+        }
+        else if (rightSprite != null && baseSortingOrder == 0)
+        {
+            baseSortingOrder = rightSprite.sortingOrder;
+        }
     }
 
     private void CreatePart(string partName, out Transform part, out BoxCollider2D collider, out SpriteRenderer sprite)
@@ -183,7 +237,96 @@ public class ObstacleWall : MonoBehaviour
 
         part = partObject.transform;
         collider = partObject.AddComponent<BoxCollider2D>();
+        collider.isTrigger = true;
         sprite = partObject.AddComponent<SpriteRenderer>();
-        sprite.color = new Color(0.95f, 0.95f, 1f, 1f);
+        sprite.sprite = GetFallbackSquareSprite();
+        sprite.color = lowDangerColor;
+    }
+
+    private void EnsureLethalMarkers()
+    {
+        EnsureMarker(gameObject);
+        if (leftPart != null)
+        {
+            EnsureMarker(leftPart.gameObject);
+        }
+
+        if (rightPart != null)
+        {
+            EnsureMarker(rightPart.gameObject);
+        }
+    }
+
+    private static void EnsureMarker(GameObject target)
+    {
+        if (target == null || target.GetComponent<LethalObstacle>() != null)
+        {
+            return;
+        }
+
+        target.AddComponent<LethalObstacle>();
+    }
+
+    private static Sprite GetFallbackSquareSprite()
+    {
+        if (fallbackSquareSprite != null)
+        {
+            return fallbackSquareSprite;
+        }
+
+        Texture2D texture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+        texture.SetPixel(0, 0, Color.white);
+        texture.Apply();
+        fallbackSquareSprite = Sprite.Create(
+            texture,
+            new Rect(0f, 0f, 1f, 1f),
+            new Vector2(0.5f, 0.5f),
+            1f);
+        return fallbackSquareSprite;
+    }
+
+    private void ApplyDangerVisuals()
+    {
+        float curvedIntensity = EvaluateDangerCurve(dangerIntensity);
+        Color dangerColor = EvaluateDangerColor(curvedIntensity);
+        int sortingOrder = baseSortingOrder + Mathf.RoundToInt(Mathf.Lerp(0f, maxAdditionalSortingOrder, curvedIntensity));
+
+        if (leftSprite != null)
+        {
+            leftSprite.color = dangerColor;
+            leftSprite.sortingOrder = sortingOrder;
+        }
+
+        if (rightSprite != null)
+        {
+            rightSprite.color = dangerColor;
+            rightSprite.sortingOrder = sortingOrder;
+        }
+    }
+
+    private float EvaluateDangerCurve(float normalizedIntensity)
+    {
+        if (dangerResponseCurve == null || dangerResponseCurve.length == 0)
+        {
+            return Mathf.Clamp01(normalizedIntensity);
+        }
+
+        return Mathf.Clamp01(dangerResponseCurve.Evaluate(normalizedIntensity));
+    }
+
+    private Color EvaluateDangerColor(float curvedIntensity)
+    {
+        Color gradientColor;
+        if (dangerGradient != null && dangerGradient.colorKeys != null && dangerGradient.colorKeys.Length > 0)
+        {
+            gradientColor = dangerGradient.Evaluate(curvedIntensity);
+        }
+        else
+        {
+            gradientColor = Color.Lerp(lowDangerColor, highDangerColor, curvedIntensity);
+        }
+
+        gradientColor.a = Mathf.Max(minDangerAlpha, gradientColor.a);
+        return gradientColor;
     }
 }
