@@ -15,6 +15,8 @@ public class PlayerController : MonoBehaviour
     [SerializeField] private float smoothing = 18f;
     [SerializeField] private bool enableTrail = true;
     [SerializeField, Min(0f)] private float trailTime = 0.18f;
+    [SerializeField, Min(0f)] private float runStartMovementInputLockSeconds = 0.08f;
+    [SerializeField] private bool requirePointerReleaseAfterRunStart = true;
 
     [Header("Collision")]
     [SerializeField] private LayerMask lethalLayers;
@@ -32,6 +34,8 @@ public class PlayerController : MonoBehaviour
     private bool wasPointerDown;
     private float dragOffsetX;
     private int activePointerId = InvalidPointerId;
+    private float movementInputUnlockUnscaledTime;
+    private bool movementPointerReleasedSinceRunStart;
 
 #if UNITY_INCLUDE_TESTS
     private static bool pointerOverrideEnabled;
@@ -52,6 +56,7 @@ public class PlayerController : MonoBehaviour
         mainCamera = Camera.main;
         runStartPosition = transform.position;
         targetX = runStartPosition.x;
+        ArmMovementStartGate();
     }
 
     private void Update()
@@ -61,7 +66,13 @@ public class PlayerController : MonoBehaviour
             return;
         }
 
-        if (TryGetMovementPointerScreenPosition(activePointerId, out Vector2 pointerScreenPosition, out int pointerId))
+        if (!movementPointerReleasedSinceRunStart && !HasAnyMovementPointerPressed())
+        {
+            movementPointerReleasedSinceRunStart = true;
+        }
+
+        if (IsMovementInputAllowed() &&
+            TryGetMovementPointerScreenPosition(activePointerId, out Vector2 pointerScreenPosition, out int pointerId))
         {
             if (!wasPointerDown || activePointerId != pointerId)
             {
@@ -93,6 +104,7 @@ public class PlayerController : MonoBehaviour
         targetX = runStartPosition.x;
         wasPointerDown = false;
         activePointerId = InvalidPointerId;
+        ArmMovementStartGate();
     }
 
 #if UNITY_INCLUDE_TESTS
@@ -221,13 +233,14 @@ public class PlayerController : MonoBehaviour
         Touchscreen touch = Touchscreen.current;
         if (touch != null)
         {
+            bool allowSingleTouchAnywhereFallback = preferredPointerId == InvalidPointerId;
             if (preferredPointerId >= 0 && TryGetInputSystemTouchById(touch, preferredPointerId, out screenPosition))
             {
                 pointerId = preferredPointerId;
                 return true;
             }
 
-            if (TryGetInputSystemTouchOnLeftHalf(touch, out screenPosition, out pointerId))
+            if (TryGetInputSystemTouchOnLeftHalf(touch, allowSingleTouchAnywhereFallback, out screenPosition, out pointerId))
             {
                 return true;
             }
@@ -249,7 +262,7 @@ public class PlayerController : MonoBehaviour
             return true;
         }
 
-        if (TryGetLegacyTouchOnLeftHalf(out screenPosition, out pointerId))
+        if (TryGetLegacyTouchOnLeftHalf(preferredPointerId == InvalidPointerId, out screenPosition, out pointerId))
         {
             return true;
         }
@@ -370,7 +383,7 @@ public class PlayerController : MonoBehaviour
         return false;
     }
 
-    private static bool TryGetInputSystemTouchOnLeftHalf(Touchscreen touchScreen, out Vector2 position, out int pointerId)
+    private static bool TryGetInputSystemTouchOnLeftHalf(Touchscreen touchScreen, bool allowSingleTouchAnywhereFallback, out Vector2 position, out int pointerId)
     {
         int pressedCount = 0;
         Vector2 singleTouchPosition = default;
@@ -398,7 +411,7 @@ public class PlayerController : MonoBehaviour
             return true;
         }
 
-        if (pressedCount == 1 && singleTouchId != InvalidPointerId)
+        if (allowSingleTouchAnywhereFallback && pressedCount == 1 && singleTouchId != InvalidPointerId)
         {
             position = singleTouchPosition;
             pointerId = singleTouchId;
@@ -430,7 +443,7 @@ public class PlayerController : MonoBehaviour
         return false;
     }
 
-    private static bool TryGetLegacyTouchOnLeftHalf(out Vector2 position, out int pointerId)
+    private static bool TryGetLegacyTouchOnLeftHalf(bool allowSingleTouchAnywhereFallback, out Vector2 position, out int pointerId)
     {
         int pressedCount = 0;
         Vector2 singleTouchPosition = default;
@@ -453,7 +466,7 @@ public class PlayerController : MonoBehaviour
             return true;
         }
 
-        if (pressedCount == 1 && singleTouchId != InvalidPointerId)
+        if (allowSingleTouchAnywhereFallback && pressedCount == 1 && singleTouchId != InvalidPointerId)
         {
             position = singleTouchPosition;
             pointerId = singleTouchId;
@@ -475,6 +488,67 @@ public class PlayerController : MonoBehaviour
         }
 
         return x <= width * 0.5f;
+    }
+
+    private void ArmMovementStartGate()
+    {
+        movementInputUnlockUnscaledTime = Time.unscaledTime + Mathf.Max(0f, runStartMovementInputLockSeconds);
+        movementPointerReleasedSinceRunStart = !requirePointerReleaseAfterRunStart || !HasAnyMovementPointerPressed();
+    }
+
+    private bool IsMovementInputAllowed()
+    {
+        GameManager manager = GameManager.Instance;
+        if (manager == null || !manager.IsPlaying)
+        {
+            return true;
+        }
+
+        if (Time.unscaledTime < movementInputUnlockUnscaledTime)
+        {
+            return false;
+        }
+
+        return movementPointerReleasedSinceRunStart;
+    }
+
+    private static bool HasAnyMovementPointerPressed()
+    {
+#if UNITY_INCLUDE_TESTS
+        if (pointerOverrideEnabled)
+        {
+            return pointerOverridePressed;
+        }
+#endif
+
+#if ENABLE_INPUT_SYSTEM
+        Touchscreen touch = Touchscreen.current;
+        if (touch != null)
+        {
+            foreach (var candidate in touch.touches)
+            {
+                if (candidate.press.isPressed)
+                {
+                    return true;
+                }
+            }
+        }
+
+        Mouse mouse = Mouse.current;
+        if (mouse != null && mouse.leftButton.isPressed)
+        {
+            return true;
+        }
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.touchCount > 0 || Input.GetMouseButton(0))
+        {
+            return true;
+        }
+#endif
+
+        return false;
     }
 
     private static void NotifyCollisionDeath(string deathCause)

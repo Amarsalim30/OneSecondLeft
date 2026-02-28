@@ -41,11 +41,13 @@ Use:
 - `trigger_stay`
 - `overlap_failsafe`
 - `gap_miss`
+- `geometry_overlap`
 - `unknown`
 
 Mapping:
 - collision variants: `PlayerController` collision/trigger/failsafe handlers
 - `gap_miss`: `ObstacleSpawner` pass check where player is outside safe gap
+- `geometry_overlap`: `ObstacleSpawner` collider-bounds overlap fail-safe against wall solids
 
 ## Implementation Notes
 - Local analytics pipeline is implemented via `GameplayAnalytics` with `IGameplayAnalyticsSink` and a default debug-log sink.

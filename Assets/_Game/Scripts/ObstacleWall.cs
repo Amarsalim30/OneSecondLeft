@@ -3,6 +3,12 @@ using UnityEngine;
 [DisallowMultipleComponent]
 public class ObstacleWall : MonoBehaviour
 {
+    private enum GapMotionMode
+    {
+        Static = 0,
+        Oscillating = 1
+    }
+
     [Header("Parts")]
     [SerializeField] private Transform leftPart;
     [SerializeField] private Transform rightPart;
@@ -14,8 +20,8 @@ public class ObstacleWall : MonoBehaviour
     [Header("Geometry")]
     [SerializeField, Min(0.1f)] private float wallHeight = 0.95f;
     [Header("Visuals")]
-    [SerializeField] private Color lowDangerColor = new Color(0.95f, 0.95f, 1f, 1f);
-    [SerializeField] private Color highDangerColor = new Color(1f, 0.23f, 0.23f, 1f);
+    [SerializeField] private Color lowDangerColor = new Color(0.98f, 0.98f, 1f, 1f);
+    [SerializeField] private Color highDangerColor = new Color(0.82f, 0.96f, 1f, 1f);
     [SerializeField] private Gradient dangerGradient;
     [SerializeField, Range(0f, 1f)] private float minDangerAlpha = 0.82f;
     [SerializeField] private int baseSortingOrder;
@@ -25,9 +31,21 @@ public class ObstacleWall : MonoBehaviour
     private const float MinSegmentWidth = 0.01f;
     private static Sprite fallbackSquareSprite;
     private float dangerIntensity;
+    private float configuredGapWidth;
+    private float configuredWallHalfWidth;
+    private float baseGapCenter;
+    private float centerMinLimit;
+    private float centerMaxLimit;
+    private GapMotionMode gapMotionMode;
+    private float oscillationAmplitude;
+    private float oscillationAngularFrequency;
+    private float oscillationPhase;
+    private float oscillationElapsed;
 
     public float GapLeft { get; private set; }
     public float GapRight { get; private set; }
+    public float WallHeight => wallHeight;
+    public float WallHalfWidth => Mathf.Max(0.1f, configuredWallHalfWidth);
     public bool PassedPlayer { get; private set; }
     public bool WasNearMiss { get; private set; }
     public float NearMissDistance { get; private set; }
@@ -42,16 +60,96 @@ public class ObstacleWall : MonoBehaviour
     public void Configure(float gapCenterX, float gapWidth, float wallHalfWidth, float y)
     {
         EnsureLethalMarkers();
-        float safeGapHalf = Mathf.Max(0.05f, gapWidth * 0.5f);
-        GapLeft = gapCenterX - safeGapHalf;
-        GapRight = gapCenterX + safeGapHalf;
+        configuredWallHalfWidth = Mathf.Max(0.1f, wallHalfWidth);
+        configuredGapWidth = Mathf.Max(0.1f, gapWidth);
+        float safeGapHalf = configuredGapWidth * 0.5f;
+        centerMinLimit = -configuredWallHalfWidth + safeGapHalf;
+        centerMaxLimit = configuredWallHalfWidth - safeGapHalf;
+        baseGapCenter = Mathf.Clamp(gapCenterX, centerMinLimit, centerMaxLimit);
         PassedPlayer = false;
         WasNearMiss = false;
         NearMissDistance = float.PositiveInfinity;
-
+        ResetGapMotion();
+        SetGapCenter(baseGapCenter);
         SetY(y);
-        ApplyGeometry(Mathf.Max(0.1f, wallHalfWidth));
         ApplyDangerVisuals();
+    }
+
+    public void ConfigureOscillation(float amplitude, float frequencyHz, float phase, float minCenter, float maxCenter)
+    {
+        float limitedMinCenter = Mathf.Max(centerMinLimit, Mathf.Min(minCenter, maxCenter));
+        float limitedMaxCenter = Mathf.Min(centerMaxLimit, Mathf.Max(minCenter, maxCenter));
+        if (limitedMaxCenter < limitedMinCenter)
+        {
+            limitedMaxCenter = limitedMinCenter;
+        }
+
+        centerMinLimit = limitedMinCenter;
+        centerMaxLimit = limitedMaxCenter;
+        baseGapCenter = Mathf.Clamp(baseGapCenter, centerMinLimit, centerMaxLimit);
+        float maxAmplitude = Mathf.Max(
+            0f,
+            Mathf.Min(baseGapCenter - centerMinLimit, centerMaxLimit - baseGapCenter));
+
+        oscillationAmplitude = Mathf.Clamp(amplitude, 0f, maxAmplitude);
+        oscillationAngularFrequency = Mathf.Max(0f, frequencyHz) * Mathf.PI * 2f;
+        oscillationPhase = phase;
+        oscillationElapsed = 0f;
+
+        if (oscillationAmplitude <= 0f || oscillationAngularFrequency <= 0f || centerMaxLimit <= centerMinLimit)
+        {
+            ResetGapMotion();
+            SetGapCenter(baseGapCenter);
+            return;
+        }
+
+        gapMotionMode = GapMotionMode.Oscillating;
+        UpdateOscillatingGapCenter();
+    }
+
+    public void Simulate(float dt)
+    {
+        if (gapMotionMode != GapMotionMode.Oscillating)
+        {
+            return;
+        }
+
+        oscillationElapsed += Mathf.Max(0f, dt);
+        UpdateOscillatingGapCenter();
+    }
+
+    public bool OverlapsSolidBounds(Bounds bounds, float edgePadding = 0f)
+    {
+        float halfHeight = wallHeight * 0.5f;
+        float wallY = transform.position.y;
+        if (bounds.max.y < wallY - halfHeight || bounds.min.y > wallY + halfHeight)
+        {
+            return false;
+        }
+
+        float wallMinX = -WallHalfWidth;
+        float wallMaxX = WallHalfWidth;
+        if (bounds.max.x <= wallMinX || bounds.min.x >= wallMaxX)
+        {
+            return false;
+        }
+
+        float safePadding = Mathf.Max(0f, edgePadding);
+        float paddedLeft = GapLeft + safePadding;
+        float paddedRight = GapRight - safePadding;
+        if (paddedLeft >= paddedRight)
+        {
+            return true;
+        }
+
+        float overlapMinX = Mathf.Max(bounds.min.x, wallMinX);
+        float overlapMaxX = Mathf.Min(bounds.max.x, wallMaxX);
+        if (overlapMinX >= overlapMaxX)
+        {
+            return false;
+        }
+
+        return overlapMinX < paddedLeft || overlapMaxX > paddedRight;
     }
 
     public void SetY(float y)
@@ -176,6 +274,30 @@ public class ObstacleWall : MonoBehaviour
         }
 
         part.localScale = Vector3.one;
+    }
+
+    private void SetGapCenter(float gapCenterX)
+    {
+        float clampedCenter = Mathf.Clamp(gapCenterX, centerMinLimit, centerMaxLimit);
+        float safeGapHalf = configuredGapWidth * 0.5f;
+        GapLeft = clampedCenter - safeGapHalf;
+        GapRight = clampedCenter + safeGapHalf;
+        ApplyGeometry(Mathf.Max(0.1f, configuredWallHalfWidth));
+    }
+
+    private void ResetGapMotion()
+    {
+        gapMotionMode = GapMotionMode.Static;
+        oscillationAmplitude = 0f;
+        oscillationAngularFrequency = 0f;
+        oscillationPhase = 0f;
+        oscillationElapsed = 0f;
+    }
+
+    private void UpdateOscillatingGapCenter()
+    {
+        float offset = Mathf.Sin(oscillationPhase + (oscillationElapsed * oscillationAngularFrequency)) * oscillationAmplitude;
+        SetGapCenter(baseGapCenter + offset);
     }
 
     private void EnsureParts()

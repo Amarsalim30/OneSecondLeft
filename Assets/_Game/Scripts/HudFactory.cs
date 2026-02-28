@@ -152,6 +152,8 @@ public static class HudFactory
             new Vector2(360f, 36f));
         comboText.color = new Color(0.8f, 0.86f, 0.95f, 1f);
 
+        TitleOverlayElements titleOverlay = CreateTitleOverlay(hudRoot);
+
         EnsureEventSystemExists();
         DeathOverlayElements deathOverlay = CreateDeathOverlay(canvasObject.transform);
 
@@ -177,9 +179,18 @@ public static class HudFactory
             deathOverlay.DailySeedValue,
             deathOverlay.ShareHintValue,
             deathOverlay.ShareStatusValue,
-            deathOverlay.ShareButton);
+            deathOverlay.ShareButton,
+            deathOverlay.RestartButton);
 
         hud.ConfigureRunContextLabel(runSeedText);
+        hud.ConfigureTitleOverlay(
+            titleOverlay.Root,
+            titleOverlay.GameNameValue,
+            titleOverlay.BestScoreValue,
+            titleOverlay.PromptValue,
+            titleOverlay.ModeValue,
+            titleOverlay.RandomModeButton,
+            titleOverlay.DailyModeButton);
 
         return hud;
     }
@@ -205,6 +216,93 @@ public static class HudFactory
         topRect.pivot = new Vector2(0.5f, 1f);
         topRect.sizeDelta = new Vector2(0f, 320f);
         topRect.anchoredPosition = Vector2.zero;
+    }
+
+    private static TitleOverlayElements CreateTitleOverlay(Transform parent)
+    {
+        TitleOverlayElements elements = new TitleOverlayElements();
+
+        Image overlayImage = CreateImage("TitleOverlay", parent, new Color(0.01f, 0.02f, 0.03f, 0.48f));
+        RectTransform overlayRect = overlayImage.rectTransform;
+        overlayRect.anchorMin = Vector2.zero;
+        overlayRect.anchorMax = Vector2.one;
+        overlayRect.offsetMin = Vector2.zero;
+        overlayRect.offsetMax = Vector2.zero;
+        overlayImage.raycastTarget = false;
+        elements.Root = overlayImage.gameObject;
+
+        Image cardImage = CreateImage("TitleCard", overlayImage.transform, new Color(0.06f, 0.09f, 0.13f, 0.95f));
+        RectTransform cardRect = cardImage.rectTransform;
+        cardRect.anchorMin = new Vector2(0.5f, 0.5f);
+        cardRect.anchorMax = new Vector2(0.5f, 0.5f);
+        cardRect.pivot = new Vector2(0.5f, 0.5f);
+        cardRect.anchoredPosition = new Vector2(0f, -20f);
+        cardRect.sizeDelta = new Vector2(780f, 760f);
+
+        Outline cardOutline = cardImage.gameObject.AddComponent<Outline>();
+        cardOutline.effectColor = new Color(0.18f, 0.88f, 1f, 0.35f);
+        cardOutline.effectDistance = new Vector2(2f, -2f);
+
+        elements.GameNameValue = CreateText(
+            "TitleGameName",
+            cardImage.transform,
+            "ONE SECOND LEFT",
+            82,
+            TextAnchor.UpperCenter,
+            new Vector2(0.5f, 1f),
+            new Vector2(0f, -78f),
+            new Vector2(720f, 170f));
+
+        elements.BestScoreValue = CreateText(
+            "TitleBestScore",
+            cardImage.transform,
+            "BEST 0.0",
+            38,
+            TextAnchor.UpperCenter,
+            new Vector2(0.5f, 1f),
+            new Vector2(0f, -250f),
+            new Vector2(560f, 70f));
+        elements.BestScoreValue.color = new Color(0.82f, 0.92f, 1f, 1f);
+
+        elements.PromptValue = CreateText(
+            "TitlePrompt",
+            cardImage.transform,
+            "TAP TO START",
+            30,
+            TextAnchor.UpperCenter,
+            new Vector2(0.5f, 1f),
+            new Vector2(0f, -330f),
+            new Vector2(580f, 58f));
+        elements.PromptValue.color = new Color(0.82f, 0.95f, 1f, 1f);
+
+        elements.ModeValue = CreateText(
+            "RunModeValue",
+            cardImage.transform,
+            "MODE: RANDOM",
+            24,
+            TextAnchor.UpperCenter,
+            new Vector2(0.5f, 1f),
+            new Vector2(0f, -410f),
+            new Vector2(520f, 46f));
+        elements.ModeValue.color = new Color(0.72f, 0.88f, 0.98f, 1f);
+
+        elements.RandomModeButton = CreateButton(
+            "RandomModeButton",
+            cardImage.transform,
+            "RANDOM",
+            new Vector2(0.5f, 1f),
+            new Vector2(-130f, -486f),
+            new Vector2(240f, 78f));
+
+        elements.DailyModeButton = CreateButton(
+            "DailyModeButton",
+            cardImage.transform,
+            "DAILY",
+            new Vector2(0.5f, 1f),
+            new Vector2(130f, -486f),
+            new Vector2(240f, 78f));
+
+        return elements;
     }
 
     private static DeathOverlayElements CreateDeathOverlay(Transform parent)
@@ -267,6 +365,14 @@ public static class HudFactory
             new Vector2(0f, -620f),
             new Vector2(500f, 84f));
 
+        elements.RestartButton = CreateButton(
+            "RestartActionButton",
+            cardImage.transform,
+            "PLAY AGAIN",
+            new Vector2(0.5f, 1f),
+            new Vector2(0f, -716f),
+            new Vector2(500f, 84f));
+
         elements.ShareHintValue = CreateText(
             "ShareHintLabel",
             cardImage.transform,
@@ -274,7 +380,7 @@ public static class HudFactory
             24,
             TextAnchor.UpperCenter,
             new Vector2(0.5f, 1f),
-            new Vector2(0f, -726f),
+            new Vector2(0f, -820f),
             new Vector2(560f, 40f));
         elements.ShareHintValue.color = new Color(0.72f, 0.86f, 0.95f, 1f);
 
@@ -285,7 +391,7 @@ public static class HudFactory
             20,
             TextAnchor.UpperCenter,
             new Vector2(0.5f, 1f),
-            new Vector2(0f, -774f),
+            new Vector2(0f, -868f),
             new Vector2(640f, 88f));
         elements.ShareStatusValue.color = new Color(0.58f, 0.95f, 0.78f, 1f);
 
@@ -428,6 +534,18 @@ public static class HudFactory
         public Text ShareHintValue;
         public Text ShareStatusValue;
         public Button ShareButton;
+        public Button RestartButton;
+    }
+
+    private sealed class TitleOverlayElements
+    {
+        public GameObject Root;
+        public Text GameNameValue;
+        public Text BestScoreValue;
+        public Text PromptValue;
+        public Text ModeValue;
+        public Button RandomModeButton;
+        public Button DailyModeButton;
     }
 }
 

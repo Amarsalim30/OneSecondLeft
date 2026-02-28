@@ -5,6 +5,9 @@ using System.IO;
 using System.Text;
 using UnityEngine;
 using UnityEngine.UI;
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
 
 public class UIHud : MonoBehaviour
 {
@@ -17,6 +20,12 @@ public class UIHud : MonoBehaviour
     private const string DefaultShareHintText = "Tap button or press S";
     private const string DefaultShareStatusText = " ";
     private const string DefaultSeedText = "N/A";
+    private const string TitleGameNameText = "ONE SECOND LEFT";
+    private const string TitlePromptText = "TAP TO START";
+    private const string TitleBestPrefixText = "BEST";
+    private const string RunModeLabelPrefixText = "MODE";
+    private const string RunModeRandomText = "RANDOM";
+    private const string RunModeDailyText = "DAILY";
     private const float NearMissEventEpsilon = 0.0001f;
 
     [SerializeField] private TimeAbility timeAbility;
@@ -30,6 +39,14 @@ public class UIHud : MonoBehaviour
     [SerializeField] private Text newBestLabel;
     [SerializeField] private Text comboLabel;
     [SerializeField] private Text speedLabel;
+    [Header("Title Overlay")]
+    [SerializeField] private GameObject titleOverlay;
+    [SerializeField] private Text titleGameNameLabel;
+    [SerializeField] private Text titleBestScoreLabel;
+    [SerializeField] private Text titlePromptLabel;
+    [SerializeField] private Text runModeLabel;
+    [SerializeField] private Button runModeRandomButton;
+    [SerializeField] private Button runModeDailyButton;
     [SerializeField] private Text runSeedLabel;
     [SerializeField] private Image nearMissPulse;
     [SerializeField] private GameObject deathOverlay;
@@ -42,6 +59,7 @@ public class UIHud : MonoBehaviour
     [SerializeField] private Text deathSummaryShareHintLabel;
     [SerializeField] private Text deathSummaryShareStatusLabel;
     [SerializeField] private Button deathSummaryShareButton;
+    [SerializeField] private Button deathSummaryRestartButton;
     [SerializeField] private Color shareStatusOkColor = new Color(0.58f, 0.95f, 0.78f, 1f);
     [SerializeField] private Color shareStatusErrorColor = new Color(1f, 0.58f, 0.58f, 1f);
     [Header("Theme")]
@@ -64,14 +82,21 @@ public class UIHud : MonoBehaviour
     [SerializeField, Range(0f, 1f)] private float nearMissPulseMaxAlpha = 0.2f;
     [SerializeField, Min(0.05f)] private float nearMissPulseDuration = 0.42f;
     [SerializeField, Range(0f, 1f)] private float nearMissScaleBoost = 0.22f;
+    [Header("Run Mode Toggle")]
+    [SerializeField] private Color runModeSelectedColor = new Color(0.13f, 0.62f, 0.75f, 0.95f);
+    [SerializeField] private Color runModeUnselectedColor = new Color(0.16f, 0.21f, 0.27f, 0.9f);
+    [SerializeField] private Color runModeSelectedTextColor = new Color(0.95f, 0.99f, 1f, 1f);
+    [SerializeField] private Color runModeUnselectedTextColor = new Color(0.72f, 0.84f, 0.92f, 1f);
 
     private int lastMeterCentiseconds = int.MinValue;
     private int lastScoreTenths = int.MinValue;
     private int lastBestTenths = int.MinValue;
+    private int lastTitleBestTenths = int.MinValue;
     private int lastComboStreak = int.MinValue;
     private int lastComboMultiplierHundredths = int.MinValue;
     private int lastSpeedTenths = int.MinValue;
     private bool lastNewBestValue = true;
+    private bool titleVisible;
     private string lastStateText;
     private bool deathVisible;
     private float lastNearMissEventTime = float.NegativeInfinity;
@@ -86,7 +111,11 @@ public class UIHud : MonoBehaviour
     private bool shareCaptureInProgress;
     private string shareHintText = DefaultShareHintText;
     private string shareStatusText = DefaultShareStatusText;
+    private RunSeedMode lastRunMode = (RunSeedMode)(-1);
     private Button boundShareButton;
+    private Button boundRestartButton;
+    private Button boundRunModeRandomButton;
+    private Button boundRunModeDailyButton;
 
     private struct RunSummarySnapshot
     {
@@ -118,17 +147,23 @@ public class UIHud : MonoBehaviour
 
         CaptureVisualDefaults();
         BindShareButton();
+        BindRestartButton();
+        BindRunModeButtons();
         ResetRunSummaryTracking();
         ResetShareFeedback();
         ApplyDeathOverlay(false);
         RefreshHud(force: true);
         RefreshDeathSummary(force: true);
         RefreshRunContextLabel();
+        RefreshRunModeToggle(force: true);
+        RefreshTitleOverlay(force: true);
     }
 
     private void OnDestroy()
     {
         UnbindShareButton();
+        UnbindRestartButton();
+        UnbindRunModeButtons();
     }
 
     public void Configure(TimeAbility ability, Text meter, Image fill, Text state)
@@ -208,10 +243,14 @@ public class UIHud : MonoBehaviour
 
         CaptureVisualDefaults();
         BindShareButton();
+        BindRestartButton();
+        BindRunModeButtons();
         ResetCache();
         ResetRunSummaryTracking();
         ApplyDeathOverlay(deathVisible);
         RefreshHud(force: true);
+        RefreshRunModeToggle(force: true);
+        RefreshTitleOverlay(force: true);
     }
 
     public void ConfigureDeathSummary(
@@ -222,7 +261,8 @@ public class UIHud : MonoBehaviour
         Text dailySeedValue,
         Text shareHintValue,
         Text shareStatusValue,
-        Button shareButton)
+        Button shareButton,
+        Button restartButton)
     {
         deathSummaryScoreLabel = scoreValue;
         deathSummaryBestLabel = bestValue;
@@ -232,8 +272,10 @@ public class UIHud : MonoBehaviour
         deathSummaryShareHintLabel = shareHintValue;
         deathSummaryShareStatusLabel = shareStatusValue;
         deathSummaryShareButton = shareButton;
+        deathSummaryRestartButton = restartButton;
 
         BindShareButton();
+        BindRestartButton();
         ResetShareFeedback();
         RefreshDeathSummary(force: true);
     }
@@ -244,10 +286,34 @@ public class UIHud : MonoBehaviour
         RefreshRunContextLabel();
     }
 
+    public void ConfigureTitleOverlay(
+        GameObject titleRoot,
+        Text gameNameValue,
+        Text bestScoreValue,
+        Text promptValue,
+        Text modeValue,
+        Button randomModeButton,
+        Button dailyModeButton)
+    {
+        titleOverlay = titleRoot;
+        titleGameNameLabel = gameNameValue;
+        titleBestScoreLabel = bestScoreValue;
+        titlePromptLabel = promptValue;
+        runModeLabel = modeValue;
+        runModeRandomButton = randomModeButton;
+        runModeDailyButton = dailyModeButton;
+
+        BindRunModeButtons();
+        RefreshRunModeToggle(force: true);
+        RefreshTitleOverlay(force: true);
+    }
+
     private void Update()
     {
         RefreshHud(force: false);
         RefreshRunContextLabel();
+        RefreshRunModeToggle(force: false);
+        RefreshTitleOverlay(force: false);
         HandleShareShortcut();
     }
 
@@ -260,6 +326,7 @@ public class UIHud : MonoBehaviour
         ApplyDeathOverlay(true);
         SetStateText(StateCrash);
         RefreshDeathSummary(force: true);
+        HideTitle();
     }
 
     public void HideDeath()
@@ -270,6 +337,18 @@ public class UIHud : MonoBehaviour
         ResetRunSummaryTracking();
         ResetShareFeedback();
         RefreshDeathSummary(force: true);
+        RefreshRunModeToggle(force: true);
+        RefreshTitleOverlay(force: true);
+    }
+
+    public void ShowTitle()
+    {
+        SetTitleVisibility(true);
+    }
+
+    public void HideTitle()
+    {
+        SetTitleVisibility(false);
     }
 
     private void RefreshHud(bool force)
@@ -357,7 +436,7 @@ public class UIHud : MonoBehaviour
     private void RefreshState(bool force)
     {
         string state = StateRun;
-        if (deathVisible || (GameManager.Instance != null && !GameManager.Instance.IsPlaying))
+        if (deathVisible)
         {
             state = StateCrash;
         }
@@ -479,9 +558,11 @@ public class UIHud : MonoBehaviour
         lastMeterCentiseconds = int.MinValue;
         lastScoreTenths = int.MinValue;
         lastBestTenths = int.MinValue;
+        lastTitleBestTenths = int.MinValue;
         lastComboStreak = int.MinValue;
         lastComboMultiplierHundredths = int.MinValue;
         lastSpeedTenths = int.MinValue;
+        lastRunMode = (RunSeedMode)(-1);
         lastNewBestValue = true;
         lastStateText = null;
         lastNearMissEventTime = float.NegativeInfinity;
@@ -547,6 +628,53 @@ public class UIHud : MonoBehaviour
         {
             deathSummaryShareButton.interactable = deathVisible && !shareCaptureInProgress;
         }
+
+        if (deathSummaryRestartButton != null)
+        {
+            bool restartReady = GameManager.Instance != null && GameManager.Instance.CanManualRestart;
+            deathSummaryRestartButton.interactable = deathVisible && !shareCaptureInProgress && restartReady;
+        }
+    }
+
+    private void RefreshTitleOverlay(bool force)
+    {
+        bool shouldShow = !deathVisible;
+        GameManager manager = GameManager.Instance;
+        if (manager != null && manager.IsPlaying)
+        {
+            shouldShow = false;
+        }
+
+        if (force || shouldShow != titleVisible)
+        {
+            SetTitleVisibility(shouldShow);
+        }
+
+        if (titleGameNameLabel != null && (force || titleGameNameLabel.text != TitleGameNameText))
+        {
+            titleGameNameLabel.text = TitleGameNameText;
+        }
+
+        if (titlePromptLabel != null && (force || titlePromptLabel.text != TitlePromptText))
+        {
+            titlePromptLabel.text = TitlePromptText;
+        }
+
+        int bestTenths = scoreManager != null ? Mathf.RoundToInt(Mathf.Max(0f, scoreManager.BestScore) * 10f) : 0;
+        if (titleBestScoreLabel != null && (force || bestTenths != lastTitleBestTenths))
+        {
+            lastTitleBestTenths = bestTenths;
+            titleBestScoreLabel.text = $"{TitleBestPrefixText} {FormatScoreTenths(bestTenths)}";
+        }
+    }
+
+    private void SetTitleVisibility(bool visible)
+    {
+        titleVisible = visible;
+        if (titleOverlay != null && titleOverlay.activeSelf != visible)
+        {
+            titleOverlay.SetActive(visible);
+        }
     }
 
     private void RefreshRunContextLabel()
@@ -591,6 +719,56 @@ public class UIHud : MonoBehaviour
         runSeedLabel.text = "RANDOM";
     }
 
+    private void RefreshRunModeToggle(bool force)
+    {
+        RunSeedMode mode = RunSeedMode.Normal;
+        GameManager manager = GameManager.Instance;
+        if (manager != null)
+        {
+            mode = manager.CurrentRunMode;
+        }
+
+        if (!force && mode == lastRunMode)
+        {
+            return;
+        }
+
+        lastRunMode = mode;
+
+        if (runModeLabel != null)
+        {
+            runModeLabel.text = mode == RunSeedMode.DailyChallenge
+                ? $"{RunModeLabelPrefixText}: {RunModeDailyText}"
+                : $"{RunModeLabelPrefixText}: {RunModeRandomText}";
+        }
+
+        bool randomSelected = mode == RunSeedMode.Normal;
+        bool dailySelected = mode == RunSeedMode.DailyChallenge;
+
+        ApplyRunModeButtonVisual(runModeRandomButton, randomSelected);
+        ApplyRunModeButtonVisual(runModeDailyButton, dailySelected);
+    }
+
+    private void ApplyRunModeButtonVisual(Button button, bool selected)
+    {
+        if (button == null)
+        {
+            return;
+        }
+
+        Image image = button.targetGraphic as Image;
+        if (image != null)
+        {
+            image.color = selected ? runModeSelectedColor : runModeUnselectedColor;
+        }
+
+        Text buttonLabel = button.GetComponentInChildren<Text>();
+        if (buttonLabel != null)
+        {
+            buttonLabel.color = selected ? runModeSelectedTextColor : runModeUnselectedTextColor;
+        }
+    }
+
     private void HandleShareShortcut()
     {
         if (!deathVisible || shareCaptureInProgress)
@@ -598,10 +776,29 @@ public class UIHud : MonoBehaviour
             return;
         }
 
-        if (Input.GetKeyDown(KeyCode.S) || Input.GetKeyDown(KeyCode.F12))
+        if (IsShareShortcutPressedThisFrame())
         {
             TrySaveShareArtifacts();
         }
+    }
+
+    private static bool IsShareShortcutPressedThisFrame()
+    {
+        bool wasPressed = false;
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        wasPressed = Input.GetKeyDown(KeyCode.S) || Input.GetKeyDown(KeyCode.F12);
+#endif
+
+#if ENABLE_INPUT_SYSTEM
+        Keyboard keyboard = Keyboard.current;
+        if (keyboard != null)
+        {
+            wasPressed |= keyboard.sKey.wasPressedThisFrame || keyboard.f12Key.wasPressedThisFrame;
+        }
+#endif
+
+        return wasPressed;
     }
 
     private void BindShareButton()
@@ -633,9 +830,113 @@ public class UIHud : MonoBehaviour
         boundShareButton = null;
     }
 
+    private void BindRestartButton()
+    {
+        if (boundRestartButton == deathSummaryRestartButton)
+        {
+            return;
+        }
+
+        UnbindRestartButton();
+        boundRestartButton = deathSummaryRestartButton;
+        if (boundRestartButton == null)
+        {
+            return;
+        }
+
+        boundRestartButton.onClick.RemoveListener(OnRestartButtonPressed);
+        boundRestartButton.onClick.AddListener(OnRestartButtonPressed);
+    }
+
+    private void UnbindRestartButton()
+    {
+        if (boundRestartButton == null)
+        {
+            return;
+        }
+
+        boundRestartButton.onClick.RemoveListener(OnRestartButtonPressed);
+        boundRestartButton = null;
+    }
+
     private void OnShareButtonPressed()
     {
         TrySaveShareArtifacts();
+    }
+
+    private void OnRestartButtonPressed()
+    {
+        GameManager.Instance?.RequestManualRestart();
+    }
+
+    private void BindRunModeButtons()
+    {
+        if (boundRunModeRandomButton == runModeRandomButton &&
+            boundRunModeDailyButton == runModeDailyButton)
+        {
+            return;
+        }
+
+        UnbindRunModeButtons();
+
+        boundRunModeRandomButton = runModeRandomButton;
+        boundRunModeDailyButton = runModeDailyButton;
+
+        if (boundRunModeRandomButton != null)
+        {
+            boundRunModeRandomButton.onClick.RemoveListener(OnRandomModePressed);
+            boundRunModeRandomButton.onClick.AddListener(OnRandomModePressed);
+        }
+
+        if (boundRunModeDailyButton != null)
+        {
+            boundRunModeDailyButton.onClick.RemoveListener(OnDailyModePressed);
+            boundRunModeDailyButton.onClick.AddListener(OnDailyModePressed);
+        }
+    }
+
+    private void UnbindRunModeButtons()
+    {
+        if (boundRunModeRandomButton != null)
+        {
+            boundRunModeRandomButton.onClick.RemoveListener(OnRandomModePressed);
+            boundRunModeRandomButton = null;
+        }
+
+        if (boundRunModeDailyButton != null)
+        {
+            boundRunModeDailyButton.onClick.RemoveListener(OnDailyModePressed);
+            boundRunModeDailyButton = null;
+        }
+    }
+
+    private void OnRandomModePressed()
+    {
+        SetRunMode(RunSeedMode.Normal);
+    }
+
+    private void OnDailyModePressed()
+    {
+        SetRunMode(RunSeedMode.DailyChallenge);
+    }
+
+    private void SetRunMode(RunSeedMode mode)
+    {
+        GameManager manager = GameManager.Instance;
+        if (manager == null)
+        {
+            return;
+        }
+
+        if (manager.CurrentRunMode == mode)
+        {
+            RefreshRunModeToggle(force: true);
+            return;
+        }
+
+        manager.SetRunSeedMode(mode, restartIfPlaying: true);
+        RefreshRunModeToggle(force: true);
+        RefreshRunContextLabel();
     }
 
     private void TrySaveShareArtifacts()
@@ -676,7 +977,7 @@ public class UIHud : MonoBehaviour
         string reportPath = string.Empty;
         string screenshotPath = string.Empty;
 
-                    yield return new WaitForEndOfFrame();
+        yield return new WaitForEndOfFrame();
 
         try
         {

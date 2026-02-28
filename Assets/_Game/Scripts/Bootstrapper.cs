@@ -57,6 +57,7 @@ public static class Bootstrapper
         ScoreManager scoreManager = EnsureService<ScoreManager>(root, "ScoreManager", repairs);
         AudioManager audioManager = EnsureService<AudioManager>(root, "AudioManager", repairs);
         ObstacleSpawner spawner = EnsureService<ObstacleSpawner>(root, "ObstacleSpawner", repairs);
+        GameplayPresentationController presentation = EnsureService<GameplayPresentationController>(root, "GameplayPresentationController", repairs);
 
         Transform obstacleContainer = FindOrCreateChild(root.transform, "Obstacles", repairs);
         PlayerController playerController = EnsurePlayer(root.transform, repairs);
@@ -71,6 +72,8 @@ public static class Bootstrapper
             repairs.Add("created UIHud");
         }
 
+        Camera mainCamera = Camera.main;
+        presentation?.Configure(mainCamera, playerController, timeAbility, scoreManager, spawner, audioManager);
         manager.Configure(playerController, timeAbility, spawner, scoreManager, audioManager, hud);
     }
 
@@ -154,6 +157,9 @@ public static class Bootstrapper
                 repairs.Add("tagged existing camera as MainCamera");
             }
 
+            camera.clearFlags = CameraClearFlags.SolidColor;
+            camera.backgroundColor = new Color(0.01f, 0.01f, 0.015f, 1f);
+
             return;
         }
 
@@ -164,7 +170,7 @@ public static class Bootstrapper
         camera.orthographic = true;
         camera.orthographicSize = 6f;
         camera.clearFlags = CameraClearFlags.SolidColor;
-        camera.backgroundColor = new Color(0.03f, 0.04f, 0.09f, 1f);
+        camera.backgroundColor = new Color(0.01f, 0.01f, 0.015f, 1f);
         repairs.Add("created Main Camera");
     }
 

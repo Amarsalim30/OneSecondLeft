@@ -24,7 +24,7 @@ Guardrail:
 
 ## Tunable Parameters (Current Runtime)
 Primary:
-- `ObstacleSpawner`: `startSpeed`, `maxSpeed`, `rampDuration`, `startSpacing`, `minSpacing`, `startGapWidth`, `minGapWidth`, `nearMissThreshold`, `nearMissSpeedBoost`, `speedBoostDecayPerSecond`.
+- `ObstacleSpawner`: `startSpeed`, `maxSpeed`, `safePhaseSeconds`, `tensePhaseSeconds`, `intensePhaseSeconds`, `speedRampExponent`, `dangerOvertimeRate`, `startSpacing`, `minSpacing`, `startGapWidth`, `minGapWidth`, `gapShrinkDurationSeconds`, `gapShrinkExponent`, `signatureMomentSeconds`, `signatureSpeedJump`, `nearMissThreshold`, `nearMissSpeedBoost`, `speedBoostDecayPerSecond`.
 - `ScoreManager`: `nearMissBonusPoints`, `nearMissComboStep`, `maxNearMissMultiplier`, `nearMissComboDecayDistance`.
 
 Secondary:
@@ -52,4 +52,3 @@ Secondary:
 ## Exit Criteria
 - All target metrics are in range for two consecutive balancing rounds.
 - Parameter set is frozen and recorded for release candidate.
-

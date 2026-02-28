@@ -18,12 +18,29 @@ public class ObstacleSpawner : MonoBehaviour
     [SerializeField, Min(0f)] private float maxGapShiftPerSpawn = 1.5f;
     [Header("Difficulty Ramp")]
     [SerializeField, Min(0f)] private float startSpeed = 3.8f;
-    [SerializeField, Min(0f)] private float maxSpeed = 7.5f;
+    [SerializeField, Min(0f)] private float maxSpeed = 8.8f;
     [SerializeField, Min(0.1f)] private float rampDuration = 80f;
+    [SerializeField, Min(0.1f)] private float safePhaseSeconds = 5f;
+    [SerializeField, Min(0.1f)] private float tensePhaseSeconds = 10f;
+    [SerializeField, Min(0.1f)] private float intensePhaseSeconds = 20f;
+    [SerializeField, Range(0.4f, 3f)] private float speedRampExponent = 1.3f;
+    [SerializeField, Min(0.01f)] private float dangerOvertimeRate = 0.3f;
     [SerializeField, Min(0.2f)] private float startSpacing = 2.6f;
-    [SerializeField, Min(0.2f)] private float minSpacing = 1.9f;
+    [SerializeField, Min(0.2f)] private float minSpacing = 1.75f;
     [SerializeField, Min(0.3f)] private float startGapWidth = 2.8f;
-    [SerializeField, Min(0.3f)] private float minGapWidth = 1.8f;
+    [SerializeField, Min(0.3f)] private float minGapWidth = 1.55f;
+    [SerializeField, Min(0.1f)] private float gapShrinkDurationSeconds = 26f;
+    [SerializeField, Range(0.4f, 3f)] private float gapShrinkExponent = 1.1f;
+    [Header("Signature Escalation")]
+    [SerializeField, Min(0f)] private float signatureMomentSeconds = 15f;
+    [SerializeField, Min(0f)] private float signatureSpeedJump = 1f;
+    [Header("Obstacle Variants")]
+    [SerializeField, Range(0f, 1f)] private float movingGapChanceAtStart = 0.08f;
+    [SerializeField, Range(0f, 1f)] private float movingGapChanceAtMaxDifficulty = 0.35f;
+    [SerializeField, Min(0f)] private float movingGapAmplitudeMin = 0.15f;
+    [SerializeField, Min(0f)] private float movingGapAmplitudeMax = 1.1f;
+    [SerializeField, Min(0.01f)] private float movingGapFrequencyMin = 0.3f;
+    [SerializeField, Min(0.01f)] private float movingGapFrequencyMax = 0.9f;
     [Header("Near Miss")]
     [SerializeField, Min(0f)] private float nearMissThreshold = 0.18f;
     [SerializeField, Min(0f)] private float lethalGapEdgePadding = 0.01f;
@@ -62,8 +79,12 @@ public class ObstacleSpawner : MonoBehaviour
     private bool spawnIterationClampWarningLogged;
     private float transientSpeedBoost;
     private int lastAnalyticsSpeedTierIndex = -1;
+    private Collider2D playerCollider;
+    private bool signatureMomentTriggered;
 
     public float CurrentSpeed { get; private set; }
+    public float RunElapsedSeconds => runElapsedSeconds;
+    public bool SignatureMomentTriggered => signatureMomentTriggered;
     public bool DefaultDeterministicSimulation => configuredDeterministicSimulation;
     public bool IsDeterministicSimulationActive => deterministicSimulation;
     public int CurrentDeterministicSeed => deterministicSeed;
@@ -151,6 +172,7 @@ public class ObstacleSpawner : MonoBehaviour
     public void SetSystems(PlayerController player, ScoreManager scoreManager, AudioManager audioManager)
     {
         this.player = player;
+        playerCollider = player != null ? player.GetComponent<Collider2D>() : null;
         this.scoreManager = scoreManager;
         this.audioManager = audioManager;
         if (player != null)
@@ -201,6 +223,7 @@ public class ObstacleSpawner : MonoBehaviour
         CurrentSpeed = Mathf.Max(0f, startSpeed);
         lastAnalyticsSpeedTierIndex = GetSpeedTierIndex(CurrentSpeed);
         transientSpeedBoost = 0f;
+        signatureMomentTriggered = false;
         deterministicAccumulator = 0f;
         if (deterministicSimulation)
         {
@@ -211,29 +234,37 @@ public class ObstacleSpawner : MonoBehaviour
 
         if (pool != null && activeWalls != null)
         {
-            SpawnWall(EvaluateGapWidth(0f), 0f);
+            SpawnWall(EvaluateGapWidth(), 0f);
         }
     }
 
-    private void MoveAndRecycleWalls(float distance, float playerY, float playerX)
+    private bool MoveAndRecycleWalls(float distance, float dt, float playerY, float playerX, bool hasPlayerBounds, Bounds playerBounds)
     {
         for (int i = 0; i < activeWallCount; i++)
         {
             ObstacleWall wall = activeWalls[i];
+            wall.Simulate(dt);
             wall.MoveDown(distance);
+
+            if (hasPlayerBounds && wall.OverlapsSolidBounds(playerBounds, lethalGapEdgePadding))
+            {
+                KillPlayerIfPossible("geometry_overlap");
+                return true;
+            }
 
             if (wall.TryRegisterPass(playerY, playerX, nearMissThreshold))
             {
                 if (!wall.IsInsideGap(playerX, lethalGapEdgePadding))
                 {
                     KillPlayerIfPossible("gap_miss");
+                    return true;
                 }
                 else if (wall.WasNearMiss)
                 {
                     scoreManager?.AddNearMissBonus(wall.NearMissDistance);
                     audioManager?.PlayNearMiss();
                     transientSpeedBoost = Mathf.Min(
-                        Mathf.Max(0f, maxNearMissSpeedBoost),
+                        GetTransientSpeedBoostCap(),
                         transientSpeedBoost + Mathf.Max(0f, nearMissSpeedBoost));
                 }
             }
@@ -244,6 +275,8 @@ public class ObstacleSpawner : MonoBehaviour
                 i--;
             }
         }
+
+        return false;
     }
 
     private void SpawnBySpacing(float distance, float difficulty)
@@ -254,7 +287,7 @@ public class ObstacleSpawner : MonoBehaviour
 
         while (distanceSinceSpawn >= spacing)
         {
-            if (!SpawnWall(EvaluateGapWidth(difficulty), difficulty))
+            if (!SpawnWall(EvaluateGapWidth(), difficulty))
             {
                 distanceSinceSpawn = spacing;
                 return;
@@ -288,6 +321,7 @@ public class ObstacleSpawner : MonoBehaviour
         }
 
         wall.Configure(center, fairGapWidth, wallHalfWidth, spawnY);
+        ConfigureWallVariant(wall, center, fairGapWidth, difficulty);
         wall.SetDangerIntensity(EvaluateDangerIntensity(difficulty));
         activeWalls[activeWallCount] = wall;
         activeWallCount++;
@@ -313,10 +347,13 @@ public class ObstacleSpawner : MonoBehaviour
         return Mathf.Max(0.2f, Mathf.Lerp(startSpacing, minSpacing, clampedDifficulty));
     }
 
-    private float EvaluateGapWidth(float difficulty)
+    private float EvaluateGapWidth()
     {
-        float clampedDifficulty = Mathf.Clamp01(difficulty);
-        return ClampGapWidthToFairRange(Mathf.Lerp(startGapWidth, minGapWidth, clampedDifficulty));
+        float shrinkProgress = gapShrinkDurationSeconds <= 0f
+            ? 1f
+            : Mathf.Clamp01(runElapsedSeconds / gapShrinkDurationSeconds);
+        float curvedProgress = Mathf.Pow(shrinkProgress, Mathf.Max(0.4f, gapShrinkExponent));
+        return ClampGapWidthToFairRange(Mathf.Lerp(startGapWidth, minGapWidth, curvedProgress));
     }
 
     private float ClampGapWidthToFairRange(float gapWidth)
@@ -328,8 +365,9 @@ public class ObstacleSpawner : MonoBehaviour
     private void SimulateStep(float dt)
     {
         runElapsedSeconds += dt;
-        float difficulty = rampDuration <= 0f ? 1f : Mathf.Clamp01(runElapsedSeconds / rampDuration);
+        float difficulty = EvaluateSpeedProgress(runElapsedSeconds);
         float baseSpeed = Mathf.Lerp(startSpeed, maxSpeed, difficulty);
+        TryTriggerSignatureEscalation();
         transientSpeedBoost = Mathf.MoveTowards(
             transientSpeedBoost,
             0f,
@@ -342,8 +380,57 @@ public class ObstacleSpawner : MonoBehaviour
         scoreManager?.AddDistance(distance);
         float playerY = player != null ? player.transform.position.y : float.NegativeInfinity;
         float playerX = player != null ? player.transform.position.x : 0f;
-        MoveAndRecycleWalls(distance, playerY, playerX);
+        bool hasPlayerBounds = TryGetPlayerBounds(out Bounds playerBounds);
+        if (MoveAndRecycleWalls(distance, dt, playerY, playerX, hasPlayerBounds, playerBounds))
+        {
+            return;
+        }
+
         SpawnBySpacing(distance, difficulty);
+    }
+
+    private float EvaluateSpeedProgress(float elapsedSeconds)
+    {
+        float safeEnd = Mathf.Max(0.1f, safePhaseSeconds);
+        float tenseEnd = Mathf.Max(safeEnd + 0.1f, tensePhaseSeconds);
+        float intenseEnd = Mathf.Max(tenseEnd + 0.1f, intensePhaseSeconds);
+        float exponent = Mathf.Max(0.4f, speedRampExponent);
+        float elapsed = Mathf.Max(0f, elapsedSeconds);
+
+        if (elapsed <= safeEnd)
+        {
+            float t = elapsed / safeEnd;
+            return Mathf.Lerp(0f, 0.22f, Mathf.Pow(t, exponent));
+        }
+
+        if (elapsed <= tenseEnd)
+        {
+            float t = (elapsed - safeEnd) / Mathf.Max(0.1f, tenseEnd - safeEnd);
+            float stageExponent = Mathf.Max(0.35f, exponent * 0.85f);
+            return Mathf.Lerp(0.22f, 0.5f, Mathf.Pow(t, stageExponent));
+        }
+
+        if (elapsed <= intenseEnd)
+        {
+            float t = (elapsed - tenseEnd) / Mathf.Max(0.1f, intenseEnd - tenseEnd);
+            float stageExponent = Mathf.Max(0.3f, exponent * 0.65f);
+            return Mathf.Lerp(0.5f, 0.85f, Mathf.Pow(t, stageExponent));
+        }
+
+        float overtime = elapsed - intenseEnd;
+        float dangerBlend = 1f - Mathf.Exp(-Mathf.Max(0.01f, dangerOvertimeRate) * overtime);
+        return Mathf.Lerp(0.85f, 1f, Mathf.Clamp01(dangerBlend));
+    }
+
+    private void TryTriggerSignatureEscalation()
+    {
+        if (signatureMomentTriggered || runElapsedSeconds < Mathf.Max(0f, signatureMomentSeconds))
+        {
+            return;
+        }
+
+        signatureMomentTriggered = true;
+        transientSpeedBoost = Mathf.Min(GetTransientSpeedBoostCap(), transientSpeedBoost + Mathf.Max(0f, signatureSpeedJump));
     }
 
     private void ApplyDangerIntensityToActiveWalls(float difficulty)
@@ -367,17 +454,7 @@ public class ObstacleSpawner : MonoBehaviour
             return 0f;
         }
 
-        if (!deterministicSimulation)
-        {
-            return UnityEngine.Random.Range(-centerLimit, centerLimit);
-        }
-
-        if (deterministicRandom == null)
-        {
-            ResetDeterministicRandom();
-        }
-
-        return Mathf.Lerp(-centerLimit, centerLimit, (float)deterministicRandom.NextDouble());
+        return Mathf.Lerp(-centerLimit, centerLimit, SampleRandom01());
     }
 
     private void HandleDeterministicModeToggle()
@@ -464,6 +541,11 @@ public class ObstacleSpawner : MonoBehaviour
         };
     }
 
+    private float GetTransientSpeedBoostCap()
+    {
+        return Mathf.Max(0f, maxNearMissSpeedBoost + Mathf.Max(0f, signatureSpeedJump));
+    }
+
     private static void KillPlayerIfPossible(string deathCause)
     {
         if (GameManager.Instance != null && GameManager.Instance.IsPlaying)
@@ -478,10 +560,25 @@ public class ObstacleSpawner : MonoBehaviour
         startSpeed = Mathf.Max(0f, startSpeed);
         maxSpeed = Mathf.Max(startSpeed, maxSpeed);
         rampDuration = Mathf.Max(0.1f, rampDuration);
+        safePhaseSeconds = Mathf.Max(0.1f, safePhaseSeconds);
+        tensePhaseSeconds = Mathf.Max(safePhaseSeconds + 0.1f, tensePhaseSeconds);
+        intensePhaseSeconds = Mathf.Max(tensePhaseSeconds + 0.1f, intensePhaseSeconds);
+        speedRampExponent = Mathf.Clamp(speedRampExponent, 0.4f, 3f);
+        dangerOvertimeRate = Mathf.Max(0.01f, dangerOvertimeRate);
         minSpacing = Mathf.Max(0.2f, minSpacing);
         startSpacing = Mathf.Max(minSpacing, startSpacing);
         minGapWidth = Mathf.Max(0.9f, minGapWidth);
         startGapWidth = Mathf.Max(minGapWidth, startGapWidth);
+        gapShrinkDurationSeconds = Mathf.Max(0.1f, gapShrinkDurationSeconds);
+        gapShrinkExponent = Mathf.Clamp(gapShrinkExponent, 0.4f, 3f);
+        signatureMomentSeconds = Mathf.Max(0f, signatureMomentSeconds);
+        signatureSpeedJump = Mathf.Max(0f, signatureSpeedJump);
+        movingGapChanceAtStart = Mathf.Clamp01(movingGapChanceAtStart);
+        movingGapChanceAtMaxDifficulty = Mathf.Clamp01(movingGapChanceAtMaxDifficulty);
+        movingGapAmplitudeMin = Mathf.Max(0f, movingGapAmplitudeMin);
+        movingGapAmplitudeMax = Mathf.Max(movingGapAmplitudeMin, movingGapAmplitudeMax);
+        movingGapFrequencyMin = Mathf.Max(0.01f, movingGapFrequencyMin);
+        movingGapFrequencyMax = Mathf.Max(movingGapFrequencyMin, movingGapFrequencyMax);
         playerBoundsX = Mathf.Max(0.5f, playerBoundsX);
         wallHalfWidth = Mathf.Max(playerBoundsX, wallHalfWidth);
         deterministicStep = Mathf.Max(0.001f, deterministicStep);
@@ -493,6 +590,96 @@ public class ObstacleSpawner : MonoBehaviour
         minDangerIntensity = Mathf.Clamp01(minDangerIntensity);
         maxDangerIntensity = Mathf.Clamp(maxDangerIntensity, minDangerIntensity, 1f);
         lethalGapEdgePadding = Mathf.Max(0f, lethalGapEdgePadding);
+    }
+
+    private void ConfigureWallVariant(ObstacleWall wall, float baseGapCenter, float gapWidth, float difficulty)
+    {
+        if (wall == null)
+        {
+            return;
+        }
+
+        float movingChance = EvaluateMovingGapChance(difficulty);
+        if (movingChance <= 0f || SampleRandom01() > movingChance)
+        {
+            return;
+        }
+
+        float centerLimit = Mathf.Max(0f, playerBoundsX - (gapWidth * 0.5f));
+        if (centerLimit <= 0f)
+        {
+            return;
+        }
+
+        float maxFairAmplitude = Mathf.Max(0f, centerLimit - Mathf.Abs(baseGapCenter));
+        if (maxFairAmplitude <= 0f)
+        {
+            return;
+        }
+
+        float amplitude = Mathf.Min(maxFairAmplitude, SampleRange(movingGapAmplitudeMin, movingGapAmplitudeMax));
+        if (amplitude <= 0f)
+        {
+            return;
+        }
+
+        float frequency = Mathf.Max(0.01f, SampleRange(movingGapFrequencyMin, movingGapFrequencyMax));
+        float phase = SampleRange(0f, Mathf.PI * 2f);
+        wall.ConfigureOscillation(amplitude, frequency, phase, -centerLimit, centerLimit);
+    }
+
+    private float EvaluateMovingGapChance(float difficulty)
+    {
+        float clampedDifficulty = Mathf.Clamp01(difficulty);
+        return Mathf.Lerp(movingGapChanceAtStart, movingGapChanceAtMaxDifficulty, clampedDifficulty);
+    }
+
+    private float SampleRange(float min, float max)
+    {
+        if (max <= min)
+        {
+            return min;
+        }
+
+        return Mathf.Lerp(min, max, SampleRandom01());
+    }
+
+    private float SampleRandom01()
+    {
+        if (!deterministicSimulation)
+        {
+            return UnityEngine.Random.value;
+        }
+
+        if (deterministicRandom == null)
+        {
+            ResetDeterministicRandom();
+        }
+
+        return (float)deterministicRandom.NextDouble();
+    }
+
+    private bool TryGetPlayerBounds(out Bounds bounds)
+    {
+        if (player == null)
+        {
+            bounds = default;
+            return false;
+        }
+
+        if (playerCollider == null)
+        {
+            playerCollider = player.GetComponent<Collider2D>();
+        }
+
+        if (playerCollider == null || !playerCollider.enabled)
+        {
+            bounds = default;
+            return false;
+        }
+
+        bounds = playerCollider.bounds;
+        return bounds.size.sqrMagnitude > 0f;
     }
 
     private bool TryInitializePool()

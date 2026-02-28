@@ -2,13 +2,20 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using UnityEngine;
+using UnityEngine.EventSystems;
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
 
 public class GameManager : MonoBehaviour
 {
     public static GameManager Instance { get; private set; }
 
-    [SerializeField] private float restartDelaySeconds = 0.5f;
-    [SerializeField, Min(0f)] private float deathSummaryMinVisibleSeconds = 2.5f;
+    [SerializeField] private float restartDelaySeconds = 0.18f;
+    [SerializeField, Min(0f)] private float deathSummaryMinVisibleSeconds = 0f;
+    [SerializeField] private bool autoRestartAfterDeath;
+    [SerializeField] private bool waitForStartInputOnLoad = true;
+    [SerializeField] private bool requireStartInputRelease = true;
     [SerializeField, Range(30, 240)] private int targetFrameRate = 60;
     [SerializeField] private PlayerController playerController;
     [SerializeField] private TimeAbility timeAbility;
@@ -16,6 +23,10 @@ public class GameManager : MonoBehaviour
     [SerializeField] private ScoreManager scoreManager;
     [SerializeField] private AudioManager audioManager;
     [SerializeField] private UIHud uiHud;
+    [Header("Ambient Hum")]
+    [SerializeField, Range(0f, 1f)] private float titleHumIntensity = 0.2f;
+    [SerializeField, Range(0f, 1f)] private float runHumIntensity = 0.5f;
+    [SerializeField, Range(0f, 1f)] private float deathHumIntensity = 0.16f;
     [Header("Run Seeding")]
     [SerializeField] private RunSeedMode runSeedMode = RunSeedMode.Normal;
     [SerializeField] private bool dailyChallengeUseUtcDate = true;
@@ -29,6 +40,9 @@ public class GameManager : MonoBehaviour
     private float currentRunStartUnscaledTime;
     private float lastDeathUnscaledTime = float.NegativeInfinity;
     private string lastDeathCause = "none";
+    private PendingRunStart pendingRunStart = PendingRunStart.None;
+    private bool runStartInputGateArmed;
+    private bool manualRestartReady;
 
     public bool IsPlaying { get; private set; }
     public RunSeedContext CurrentRunContext => currentRunContext;
@@ -37,7 +51,14 @@ public class GameManager : MonoBehaviour
     public string CurrentChallengeDateKey => currentRunContext.ChallengeDateKey;
     public int CurrentRunCount => runCount;
     public string LastDeathCause => lastDeathCause;
+    public bool CanManualRestart => manualRestartReady;
     public event Action<RunSeedContext> RunContextChanged;
+
+    private enum PendingRunStart
+    {
+        None,
+        Initial
+    }
 
     public void Configure(
         PlayerController player,
@@ -114,6 +135,14 @@ public class GameManager : MonoBehaviour
     {
         ResolveMissingReferences();
         WireSystems();
+        ApplyRunSeeding();
+        LogMissingSystemsIfAny();
+
+        if (waitForStartInputOnLoad)
+        {
+            EnterPendingInitialStartState();
+            return;
+        }
 
         StartRun();
     }
@@ -121,6 +150,7 @@ public class GameManager : MonoBehaviour
     private void OnDisable()
     {
         NormalizeTimeState();
+        audioManager?.SetAmbientHum(false);
     }
 
     private void OnApplicationPause(bool _)
@@ -138,6 +168,7 @@ public class GameManager : MonoBehaviour
     private void OnDestroy()
     {
         NormalizeTimeState();
+        audioManager?.SetAmbientHum(false);
         if (Instance == this)
         {
             Instance = null;
@@ -146,18 +177,52 @@ public class GameManager : MonoBehaviour
 
     private void Update()
     {
-        if (!restartQueued)
+        if (restartQueued)
+        {
+            restartTimer -= Time.unscaledDeltaTime;
+            if (restartTimer > 0f)
+            {
+                return;
+            }
+
+            restartQueued = false;
+            if (autoRestartAfterDeath)
+            {
+                StartRunInternal(autoRestarted: true);
+                return;
+            }
+
+            manualRestartReady = true;
+        }
+
+        if (manualRestartReady && IsManualRestartTriggeredThisFrame())
+        {
+            RequestManualRestart();
+        }
+
+        if (pendingRunStart == PendingRunStart.None || manualRestartReady)
         {
             return;
         }
 
-        restartTimer -= Time.unscaledDeltaTime;
-        if (restartTimer > 0f)
+        if (!runStartInputGateArmed)
+        {
+            if (!IsStartInputPressed())
+            {
+                runStartInputGateArmed = true;
+            }
+
+            return;
+        }
+
+        if (!IsStartInputTriggeredThisFrame())
         {
             return;
         }
 
-        StartRun();
+        pendingRunStart = PendingRunStart.None;
+        runStartInputGateArmed = false;
+        StartRunInternal(autoRestarted: false);
     }
 
     public void KillPlayer()
@@ -178,24 +243,77 @@ public class GameManager : MonoBehaviour
         EmitRunEndAnalytics(lastDeathCause);
 
         IsPlaying = false;
-        restartQueued = true;
-        restartTimer = Mathf.Max(restartDelaySeconds, deathSummaryMinVisibleSeconds);
+        pendingRunStart = PendingRunStart.None;
+        runStartInputGateArmed = false;
+        manualRestartReady = false;
 
         scoreManager?.CommitRunIfBest();
         audioManager?.PlayCrash();
+        audioManager?.SetAmbientHum(true, deathHumIntensity);
         timeAbility?.ForceNormalTime();
         uiHud?.ShowDeath();
+
+        float postDeathDelay = Mathf.Max(restartDelaySeconds, deathSummaryMinVisibleSeconds);
+        if (autoRestartAfterDeath)
+        {
+            restartQueued = true;
+            restartTimer = postDeathDelay;
+            return;
+        }
+
+        if (postDeathDelay > 0f)
+        {
+            restartQueued = true;
+            restartTimer = postDeathDelay;
+            return;
+        }
+
+        restartQueued = false;
+        restartTimer = 0f;
+        manualRestartReady = true;
     }
 
     public void StartRun()
+    {
+        StartRunInternal(autoRestarted: false);
+    }
+
+    public void RequestManualRestart()
+    {
+        if (!manualRestartReady || IsPlaying)
+        {
+            return;
+        }
+
+        StartRunInternal(autoRestarted: false);
+    }
+
+    private void OnValidate()
+    {
+        restartDelaySeconds = Mathf.Max(0f, restartDelaySeconds);
+        deathSummaryMinVisibleSeconds = Mathf.Max(0f, deathSummaryMinVisibleSeconds);
+        targetFrameRate = Mathf.Clamp(targetFrameRate, 30, 240);
+        titleHumIntensity = Mathf.Clamp01(titleHumIntensity);
+        runHumIntensity = Mathf.Clamp01(runHumIntensity);
+        deathHumIntensity = Mathf.Clamp01(deathHumIntensity);
+        if (string.IsNullOrWhiteSpace(dailyChallengeSeedSalt))
+        {
+            dailyChallengeSeedSalt = "OneSecondLeft.DailyChallenge.v1";
+        }
+    }
+
+    private void StartRunInternal(bool autoRestarted)
     {
         ResolveMissingReferences();
         WireSystems();
         ApplyRunSeeding();
         LogMissingSystemsIfAny();
 
-        bool wasAutoRestart = restartQueued;
         restartQueued = false;
+        restartTimer = 0f;
+        pendingRunStart = PendingRunStart.None;
+        runStartInputGateArmed = false;
+        manualRestartReady = false;
         IsPlaying = true;
         runCount++;
         currentRunStartUnscaledTime = Time.unscaledTime;
@@ -206,23 +324,215 @@ public class GameManager : MonoBehaviour
         playerController?.ResetRunPosition();
         timeAbility?.ResetMeter();
         audioManager?.SetSlowPitch(false);
+        audioManager?.SetAmbientHum(true, runHumIntensity);
+        uiHud?.HideTitle();
         uiHud?.HideDeath();
         EmitRunStartAnalytics();
-        if (wasAutoRestart)
+        if (autoRestarted)
         {
             EmitRunAutoRestartedAnalytics();
         }
     }
 
-    private void OnValidate()
+    private void EnterPendingInitialStartState()
     {
-        restartDelaySeconds = Mathf.Max(0f, restartDelaySeconds);
-        deathSummaryMinVisibleSeconds = Mathf.Max(0f, deathSummaryMinVisibleSeconds);
-        targetFrameRate = Mathf.Clamp(targetFrameRate, 30, 240);
-        if (string.IsNullOrWhiteSpace(dailyChallengeSeedSalt))
+        IsPlaying = false;
+        restartQueued = false;
+        restartTimer = 0f;
+        lastDeathCause = "none";
+        manualRestartReady = false;
+
+        scoreManager?.ResetRun();
+        obstacleSpawner?.ResetRun();
+        playerController?.ResetRunPosition();
+        timeAbility?.ResetMeter();
+        audioManager?.SetSlowPitch(false);
+        audioManager?.SetAmbientHum(true, titleHumIntensity);
+        uiHud?.ShowTitle();
+        uiHud?.HideDeath();
+
+        QueuePendingRunStart(PendingRunStart.Initial);
+    }
+
+    private void QueuePendingRunStart(PendingRunStart startReason)
+    {
+        pendingRunStart = startReason;
+        if (!requireStartInputRelease)
         {
-            dailyChallengeSeedSalt = "OneSecondLeft.DailyChallenge.v1";
+            runStartInputGateArmed = true;
+            return;
         }
+
+        // Require a full release->press cycle so held touch/mouse cannot auto-start.
+        runStartInputGateArmed = !IsStartInputPressed();
+    }
+
+    private bool IsStartInputPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        Touchscreen touch = Touchscreen.current;
+        if (touch != null)
+        {
+            foreach (var candidate in touch.touches)
+            {
+                if (candidate.press.isPressed)
+                {
+                    return true;
+                }
+            }
+        }
+
+        Mouse mouse = Mouse.current;
+        if (mouse != null && mouse.leftButton.isPressed)
+        {
+            return true;
+        }
+
+        Keyboard keyboard = Keyboard.current;
+        if (keyboard != null && keyboard.anyKey.isPressed)
+        {
+            return true;
+        }
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.touchCount > 0 || Input.GetMouseButton(0) || Input.anyKey)
+        {
+            return true;
+        }
+#endif
+
+        return false;
+    }
+
+    private bool IsStartInputTriggeredThisFrame()
+    {
+        bool suppressPointerStart = IsPointerOverUi();
+
+#if ENABLE_INPUT_SYSTEM
+        Touchscreen touch = Touchscreen.current;
+        if (touch != null && !suppressPointerStart)
+        {
+            foreach (var candidate in touch.touches)
+            {
+                if (candidate.press.wasPressedThisFrame)
+                {
+                    return true;
+                }
+            }
+        }
+
+        Mouse mouse = Mouse.current;
+        if (mouse != null && mouse.leftButton.wasPressedThisFrame && !suppressPointerStart)
+        {
+            return true;
+        }
+
+        Keyboard keyboard = Keyboard.current;
+        if (keyboard != null && keyboard.anyKey.wasPressedThisFrame)
+        {
+            return true;
+        }
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        if (!suppressPointerStart)
+        {
+            for (int i = 0; i < Input.touchCount; i++)
+            {
+                if (Input.GetTouch(i).phase == TouchPhase.Began)
+                {
+                    return true;
+                }
+            }
+
+            if (Input.GetMouseButtonDown(0))
+            {
+                return true;
+            }
+        }
+
+        if (Input.anyKeyDown)
+        {
+            return true;
+        }
+#endif
+
+        return false;
+    }
+
+    private static bool IsPointerOverUi()
+    {
+        EventSystem eventSystem = EventSystem.current;
+        if (eventSystem == null)
+        {
+            return false;
+        }
+
+        if (eventSystem.IsPointerOverGameObject())
+        {
+            return true;
+        }
+
+#if ENABLE_INPUT_SYSTEM
+        Touchscreen touch = Touchscreen.current;
+        if (touch != null)
+        {
+            foreach (var candidate in touch.touches)
+            {
+                if (!candidate.press.isPressed)
+                {
+                    continue;
+                }
+
+                if (eventSystem.IsPointerOverGameObject(candidate.touchId.ReadValue()))
+                {
+                    return true;
+                }
+            }
+        }
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        for (int i = 0; i < Input.touchCount; i++)
+        {
+            if (eventSystem.IsPointerOverGameObject(Input.GetTouch(i).fingerId))
+            {
+                return true;
+            }
+        }
+#endif
+
+        return false;
+    }
+
+    private static bool IsManualRestartTriggeredThisFrame()
+    {
+#if ENABLE_INPUT_SYSTEM
+        Keyboard keyboard = Keyboard.current;
+        if (keyboard != null)
+        {
+            if (keyboard.spaceKey.wasPressedThisFrame ||
+                keyboard.enterKey.wasPressedThisFrame ||
+                keyboard.numpadEnterKey.wasPressedThisFrame ||
+                keyboard.rKey.wasPressedThisFrame)
+            {
+                return true;
+            }
+        }
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.GetKeyDown(KeyCode.Space) ||
+            Input.GetKeyDown(KeyCode.Return) ||
+            Input.GetKeyDown(KeyCode.KeypadEnter) ||
+            Input.GetKeyDown(KeyCode.R))
+        {
+            return true;
+        }
+#endif
+
+        return false;
     }
 
     private void ResolveMissingReferences()

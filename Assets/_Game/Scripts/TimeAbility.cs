@@ -9,11 +9,15 @@ public class TimeAbility : MonoBehaviour
     [SerializeField, Range(0.05f, 1f)] private float slowScale = 0.32f;
     [SerializeField, Range(0.1f, 5f)] private float maxSlowSeconds = 1f;
     [SerializeField] private bool requireTwoTouchForSlow = true;
+    [SerializeField, Min(0f)] private float touchStartSlowActivationLockSeconds = 0.2f;
+    [SerializeField] private bool requireTouchReleaseAfterRunStart = true;
     [SerializeField] private AudioManager audioManager;
 
     private float baseFixedDeltaTime;
     private bool slowActive;
     private bool slowMeterDepletedEmitted;
+    private float touchSlowUnlockUnscaledTime;
+    private bool touchReleasedSinceRunStart;
 #if UNITY_INCLUDE_TESTS
     private static bool slowHoldOverrideEnabled;
     private static bool slowHoldOverrideValue;
@@ -31,6 +35,7 @@ public class TimeAbility : MonoBehaviour
         RemainingSeconds = maxSlowSeconds;
         slowActive = false;
         slowMeterDepletedEmitted = false;
+        ArmTouchStartGate();
         ApplyTimeScale(false);
     }
 
@@ -46,10 +51,16 @@ public class TimeAbility : MonoBehaviour
 
     private void Update()
     {
-        if (GameManager.Instance != null && !GameManager.Instance.IsPlaying)
+        GameManager manager = GameManager.Instance;
+        if (manager != null && !manager.IsPlaying)
         {
             ForceNormalTime();
             return;
+        }
+
+        if (!touchReleasedSinceRunStart && !HasAnySlowInputPressed())
+        {
+            touchReleasedSinceRunStart = true;
         }
 
         bool wantsSlow = IsSlowHoldActive() && RemainingSeconds > 0f;
@@ -72,6 +83,7 @@ public class TimeAbility : MonoBehaviour
     {
         RemainingSeconds = maxSlowSeconds;
         slowMeterDepletedEmitted = false;
+        ArmTouchStartGate();
         ForceNormalTime();
     }
 
@@ -192,6 +204,28 @@ public class TimeAbility : MonoBehaviour
         Time.fixedDeltaTime = targetFixedDelta;
     }
 
+    private void ArmTouchStartGate()
+    {
+        touchSlowUnlockUnscaledTime = Time.unscaledTime + Mathf.Max(0f, touchStartSlowActivationLockSeconds);
+        touchReleasedSinceRunStart = !requireTouchReleaseAfterRunStart || !HasAnyTouchPressed();
+    }
+
+    private bool IsTouchSlowAllowed()
+    {
+        GameManager manager = GameManager.Instance;
+        if (manager == null || !manager.IsPlaying)
+        {
+            return true;
+        }
+
+        if (Time.unscaledTime < touchSlowUnlockUnscaledTime)
+        {
+            return false;
+        }
+
+        return touchReleasedSinceRunStart;
+    }
+
     private bool IsSlowHoldActive()
     {
 #if UNITY_INCLUDE_TESTS
@@ -225,7 +259,10 @@ public class TimeAbility : MonoBehaviour
             {
                 if (!requireTwoTouchForSlow || pressedTouches >= 2)
                 {
-                    return true;
+                    if (IsTouchSlowAllowed())
+                    {
+                        return true;
+                    }
                 }
             }
         }
@@ -233,7 +270,7 @@ public class TimeAbility : MonoBehaviour
         Mouse mouse = Mouse.current;
         if (mouse != null && mouse.rightButton.isPressed)
         {
-            return true;
+            return IsTouchSlowAllowed();
         }
 #endif
 
@@ -251,13 +288,72 @@ public class TimeAbility : MonoBehaviour
 
         if (rightHalfPressed && (!requireTwoTouchForSlow || pressedTouches >= 2))
         {
-            return true;
+            if (IsTouchSlowAllowed())
+            {
+                return true;
+            }
         }
 
-        return Input.GetMouseButton(1);
+        if (Input.GetMouseButton(1))
+        {
+            return IsTouchSlowAllowed();
+        }
+
+        return false;
 #else
         return false;
 #endif
+    }
+
+    private static bool HasAnySlowInputPressed()
+    {
+        if (HasAnyTouchPressed())
+        {
+            return true;
+        }
+
+#if ENABLE_INPUT_SYSTEM
+        Mouse mouse = Mouse.current;
+        if (mouse != null && mouse.rightButton.isPressed)
+        {
+            return true;
+        }
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.GetMouseButton(1))
+        {
+            return true;
+        }
+#endif
+
+        return false;
+    }
+
+    private static bool HasAnyTouchPressed()
+    {
+#if ENABLE_INPUT_SYSTEM
+        Touchscreen touch = Touchscreen.current;
+        if (touch != null)
+        {
+            foreach (var candidate in touch.touches)
+            {
+                if (candidate.press.isPressed)
+                {
+                    return true;
+                }
+            }
+        }
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+        if (Input.touchCount > 0)
+        {
+            return true;
+        }
+#endif
+
+        return false;
     }
 
     private static bool IsOnRightHalf(float x)
